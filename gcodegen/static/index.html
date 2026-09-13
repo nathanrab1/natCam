@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gerador de G-code</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1d2026; --panel2: #262a32; --border: #343944;
+    --text: #e6e6e6; --muted: #8a919e; --accent: #4da6ff; --ok: #4cd964; --err: #ff5c4d;
+    --copper: #c47a2c; --board: #3a3527; --iso: #ff5c4d; --drill: #4da6ff; --cut: #4cd964; --milled: #c77dff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: 340px 1fr;
+    grid-template-areas: "top top" "side main" "log log";
+  }
+  header { grid-area: top; display: flex; align-items: center; gap: 12px; padding: 8px 12px;
+           background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 600; }
+  header .spacer { flex: 1; }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+           border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #06121f; border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  #file-name { color: var(--muted); }
+  aside { grid-area: side; background: var(--panel); border-right: 1px solid var(--border);
+          overflow-y: auto; display: flex; flex-direction: column; }
+  .tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 8px 4px;
+                 border-bottom: 2px solid transparent; color: var(--muted); }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+  .group { display: none; padding: 10px 12px; }
+  .group .gen { margin-top: 14px; width: 100%; padding: 8px; }
+  .group.active { display: block; }
+  .field { display: grid; grid-template-columns: 1fr 90px; align-items: center; gap: 8px; margin: 6px 0; position: relative; }
+  .field label { color: var(--text); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  .help { display: inline-flex; align-items: center; justify-content: center;
+          width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--muted); color: var(--muted);
+          font-size: 10px; font-weight: 700; cursor: help; flex: none; user-select: none; }
+  .help:hover, .help.open { border-color: var(--accent); color: var(--accent); }
+  .help .tip { display: none; position: absolute; left: 0; right: 0; top: calc(100% + 4px);
+               padding: 8px 10px; background: #2b3039; color: var(--text); border: 1px solid var(--border);
+               border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.5); font-size: 12px; font-weight: 400;
+               line-height: 1.4; z-index: 10; cursor: default; }
+  .help:hover .tip, .help.open .tip { display: block; }
+  .field:has(.help:hover), .field:has(.help.open) { z-index: 11; }
+  .field input, .field select { background: var(--bg); color: var(--text); border: 1px solid var(--border);
+                                border-radius: 4px; padding: 4px 6px; font: inherit; width: 100%; }
+  .field input[type=checkbox] { width: auto; justify-self: start; }
+  .out { padding: 10px 12px; border-top: 1px solid var(--border); margin-top: auto; }
+  .out h3 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .out ul { list-style: none; margin: 0; padding: 0; }
+  .out li { display: flex; justify-content: space-between; padding: 3px 0; font-size: 13px; }
+  .out a { color: var(--accent); text-decoration: none; }
+  .out a:hover { text-decoration: underline; }
+  .out .size { color: var(--muted); }
+  .dest { display: flex; gap: 6px; }
+  .dest input { flex: 1; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+                border-radius: 4px; padding: 4px 6px; font: inherit; font-size: 12px; }
+  .dest button { padding: 4px 8px; white-space: nowrap; }
+  main { grid-area: main; position: relative; display: flex; flex-direction: column; min-width: 0; }
+  .viewbar { display: flex; gap: 12px; align-items: center; padding: 6px 12px; background: var(--panel);
+             border-bottom: 1px solid var(--border); font-size: 13px; }
+  .viewbar label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .viewbar .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .viewbar .spacer { flex: 1; }
+  #coords { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 160px; text-align: right; }
+  #view { flex: 1; cursor: grab; background: var(--bg); touch-action: none; }
+  #view.dragging { cursor: grabbing; }
+  #drop { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+          color: var(--muted); font-size: 16px; pointer-events: none; text-align: center; }
+  #drop.hidden { display: none; }
+  body.dragover main { outline: 2px dashed var(--accent); outline-offset: -8px; }
+  footer { grid-area: log; background: #0d0f12; border-top: 1px solid var(--border); }
+  #log { margin: 0; padding: 8px 12px; height: 130px; overflow-y: auto; font: 12px/1.5 Menlo, monospace;
+         color: #cfd3da; white-space: pre-wrap; }
+  #log .err { color: var(--err); }
+  #log .ok { color: var(--ok); }
+  #busy { display: none; color: var(--accent); }
+  #busy.on { display: inline; }
+  @media (max-width: 800px) {
+    body { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr auto; grid-template-areas: "top" "side" "main" "log"; }
+    aside { max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gerador de G-code <span id="ver" style="color:var(--muted);font-weight:400"></span></h1>
+  <button id="btn-open">Abrir ZIP…</button>
+  <input id="file" type="file" accept=".zip,application/zip" hidden>
+  <span id="file-name">nenhum arquivo aberto</span>
+  <span id="busy">processando…</span>
+  <span class="spacer"></span>
+  <button id="btn-reveal" disabled>Mostrar no Finder</button>
+</header>
+
+<aside>
+  <div class="tabs" id="tabs"></div>
+  <div id="groups"></div>
+  <div class="out">
+    <h3>Pasta de destino</h3>
+    <div class="dest">
+      <input id="out-dir" type="text" placeholder="padrão: output/<nome> na pasta do projeto" spellcheck="false">
+      <button id="btn-choose" title="Abrir o seletor de pastas do macOS">Escolher…</button>
+    </div>
+    <h3 style="margin-top:12px">Arquivos gerados</h3>
+    <ul id="files"><li style="color:var(--muted)">nenhum ainda</li></ul>
+    <p id="all-link" style="margin:8px 0 0;display:none"><a href="#" id="btn-all">⬇ Baixar tudo (.zip)</a></p>
+  </div>
+</aside>
+
+<main>
+  <div class="viewbar">
+    <label><input type="checkbox" data-layer="copper" checked><span class="sw" style="background:var(--copper)"></span>Cobre</label>
+    <label><input type="checkbox" data-layer="iso" checked><span class="sw" style="background:var(--iso)"></span>Isolação</label>
+    <label><input type="checkbox" data-layer="drill" checked><span class="sw" style="background:var(--drill)"></span>Furos</label>
+    <label><input type="checkbox" data-layer="cut" checked><span class="sw" style="background:var(--cut)"></span>Recorte</label>
+    <span class="spacer"></span>
+    <span id="coords"></span>
+    <button id="btn-fit">Ajustar zoom</button>
+  </div>
+  <svg id="view" xmlns="http://www.w3.org/2000/svg">
+    <g id="world" transform="scale(1,-1)">
+      <g id="l-outline"></g><g id="l-copper"></g><g id="l-iso"></g><g id="l-drill"></g><g id="l-cut"></g><g id="l-axes"></g>
+    </g>
+  </svg>
+  <div id="drop">Arraste o ZIP do KiCad aqui<br><small>ou use “Abrir ZIP…”</small></div>
+</main>
+
+<footer><pre id="log"></pre></footer>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const state = { token: null, name: null, board: null, vis: { copper: true, iso: true, drill: true, cut: true } };
+  const logEl = $("#log");
+
+  function log(msg, cls) {
+    const line = document.createElement("div");
+    if (cls) line.className = cls;
+    line.textContent = msg;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function busy(on) { $("#busy").classList.toggle("on", on);
+                      document.querySelectorAll(".gen").forEach(b => b.disabled = on || !state.token); }
+
+  // ---------------------------------------------------------------- parâmetros
+  async function buildParams() {
+    const p = await (await fetch("/api/params")).json();
+    $("#ver").textContent = "v" + p.version;
+    const tabs = $("#tabs"), groups = $("#groups");
+    p.groups.forEach((g, i) => {
+      const tb = document.createElement("button");
+      tb.textContent = g.name; tb.dataset.i = i; if (i === 0) tb.classList.add("active");
+      tb.onclick = () => { document.querySelectorAll(".tabs button, .group").forEach(e => e.classList.remove("active"));
+                           tb.classList.add("active"); groups.children[i].classList.add("active"); };
+      tabs.appendChild(tb);
+      const div = document.createElement("div");
+      div.className = "group" + (i === 0 ? " active" : "");
+      g.fields.forEach(f => {
+        const row = document.createElement("div"); row.className = "field";
+        const label = document.createElement("label"); label.htmlFor = "f-" + f.name;
+        label.append(document.createTextNode(f.label));
+        if (f.help) {
+          const h = document.createElement("span"); h.className = "help"; h.textContent = "?";
+          h.setAttribute("role", "button"); h.setAttribute("aria-label", "Ajuda: " + f.label); h.tabIndex = 0;
+          const tip = document.createElement("span"); tip.className = "tip"; tip.textContent = f.help;
+          h.appendChild(tip);
+          h.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation();
+            document.querySelectorAll(".help.open").forEach(o => o !== h && o.classList.remove("open"));
+            h.classList.toggle("open"); });
+          label.appendChild(h);
+        }
+        let input;
+        if (f.kind === "choice") {
+          input = document.createElement("select");
+          f.options.forEach(o => { const opt = document.createElement("option"); opt.value = o; opt.textContent = o; input.appendChild(opt); });
+          input.value = String(f.value);
+        } else if (f.kind === "bool") {
+          input = document.createElement("input"); input.type = "checkbox"; input.checked = !!f.value;
+        } else {
+          input = document.createElement("input"); input.type = "text"; input.inputMode = "decimal"; input.value = f.value;
+        }
+        input.id = "f-" + f.name; input.dataset.name = f.name; input.dataset.kind = f.kind;
+        row.append(label, input); div.appendChild(row);
+        if (["layer", "mirror", "origin"].includes(f.name)) input.addEventListener("change", () => state.token && preview());
+      });
+      const gen = document.createElement("button");
+      gen.className = "primary gen"; gen.disabled = true;
+      gen.textContent = GEN_LABEL[g.name] || "Gerar G-code";
+      gen.onclick = () => generate(GEN_OPS[g.name]);
+      div.appendChild(gen);
+      groups.appendChild(div);
+    });
+  }
+  const GEN_LABEL = { "Geral": "Gerar tudo (isolação + furos + recorte)", "Isolação": "Gerar G-code da isolação",
+                      "Furação": "Gerar G-code da furação", "Recorte": "Gerar G-code do recorte" };
+  const GEN_OPS = { "Geral": ["isolation", "drill", "cutout"], "Isolação": ["isolation"],
+                    "Furação": ["drill"], "Recorte": ["cutout"] };
+  function readConfig() {
+    const cfg = {};
+    document.querySelectorAll("[data-name]").forEach(el => {
+      cfg[el.dataset.name] = el.dataset.kind === "bool" ? el.checked : el.value;
+    });
+    return cfg;
+  }
+
+  // ---------------------------------------------------------------- API
+  async function post(url, body, headers) {
+    const r = await fetch(url, { method: "POST", body, headers });
+    const data = await r.json().catch(() => ({ error: "resposta inválida do servidor" }));
+    if (!r.ok || data.error) throw new Error(data.error || r.statusText);
+    return data;
+  }
+  async function loadFile(file) {
+    if (!file) return;
+    busy(true);
+    try {
+      log("Abrindo " + file.name);
+      const d = await post("/api/load", file, { "X-Filename": file.name });
+      await opened(d, file.name);
+    } catch (e) { log("ERRO: " + e.message, "err"); }
+    finally { busy(false); }
+  }
+  async function opened(d, label) {
+    try {
+      state.token = d.token; state.name = d.name;
+      $("#file-name").textContent = label;
+      d.log.forEach(l => log("  " + l));
+      if (!d.layers.includes("B_Cu") && d.layers.includes("F_Cu")) $("#f-layer").value = "F_Cu";
+      if (!d.has_outline) log("aviso: sem Edge.Cuts fechado — recorte desativado", "err");
+      $("#files").innerHTML = '<li style="color:var(--muted)">nenhum ainda</li>';
+      $("#all-link").style.display = "none"; $("#btn-reveal").disabled = true;
+      $("#drop").classList.add("hidden");
+      await preview(true);
+    } catch (e) { log("ERRO: " + e.message, "err"); }
+  }
+  async function preview(fit) {
+    try {
+      const d = await post("/api/preview", JSON.stringify({ token: state.token, config: readConfig() }),
+                           { "Content-Type": "application/json" });
+      state.board = d.board; render(); if (fit) fitView();
+    } catch (e) { log("ERRO: " + e.message, "err"); }
+  }
+  async function generate(ops) {
+    busy(true);
+    try {
+      log("Gerando " + (ops.length === 3 ? "tudo" : { isolation: "isolação", drill: "furação", cutout: "recorte" }[ops[0]]) + "…");
+      const out_dir = $("#out-dir").value.trim();
+      try { localStorage.setItem("gcodegen.out_dir", out_dir); } catch (_) {}
+      const d = await post("/api/generate", JSON.stringify({ token: state.token, config: readConfig(), out_dir, ops }),
+                           { "Content-Type": "application/json" });
+      d.log.forEach(l => log("  " + l));
+      log("Pronto.", "ok");
+      state.board = d.board; render();
+      const ul = $("#files"); ul.innerHTML = "";
+      d.files.forEach(f => {
+        const li = document.createElement("li");
+        const a = document.createElement("a"); a.href = `/api/files/${state.token}/${encodeURIComponent(f.name)}`;
+        a.textContent = f.name; if (!f.name.endsWith(".svg")) a.download = f.name; else a.target = "_blank";
+        const s = document.createElement("span"); s.className = "size"; s.textContent = (f.size / 1024).toFixed(1) + " kB";
+        li.append(a, s); ul.appendChild(li);
+      });
+      $("#btn-all").href = `/api/files/${state.token}/all.zip`;
+      $("#all-link").style.display = "block"; $("#btn-reveal").disabled = false;
+    } catch (e) { log("ERRO: " + e.message, "err"); }
+    finally { busy(false); }
+  }
+
+  // ---------------------------------------------------------------- render SVG
+  const svg = $("#view");
+  let vb = { x: 0, y: 0, w: 100, h: 100 };
+  const ringD = (ring) => "M" + ring.map(p => p[0] + " " + p[1]).join("L") + "Z";
+  const polyD = (rings) => rings.map(ringD).join(" ");
+  const pathD = (pts) => "M" + pts.map(p => p[0] + " " + p[1]).join("L");
+  const NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+  function strokeW(mm) { return Math.max(mm, vb.w / svg.clientWidth * 1.2); }
+
+  function render() {
+    const b = state.board; if (!b) return;
+    const L = (id) => { const g = $(id); g.innerHTML = ""; return g; };
+    const bg = b.outline.length ? "var(--board)" : "var(--bg)";
+    const lo = L("#l-outline");
+    b.outline.forEach(rings => lo.appendChild(el("path", { d: polyD(rings), fill: "var(--board)", "fill-rule": "evenodd", stroke: "#6b6248", "stroke-width": strokeW(0.05) })));
+    const lc = L("#l-copper");
+    if (state.vis.copper) b.copper.forEach(rings => lc.appendChild(el("path", { d: polyD(rings), fill: "var(--copper)", "fill-rule": "evenodd" })));
+    const li = L("#l-iso");
+    if (state.vis.iso) b.isolation.forEach(p => li.appendChild(el("path", { d: pathD(p), fill: "none", stroke: "var(--iso)", "stroke-width": strokeW(0.06), "stroke-linejoin": "round" })));
+    const ld = L("#l-drill");
+    if (state.vis.drill) {
+      b.holes.forEach(([x, y, d]) => ld.appendChild(el("circle", { cx: x, cy: y, r: d / 2, fill: bg, stroke: "var(--drill)", "stroke-width": strokeW(0.05) })));
+      b.milled.forEach(([x, y, d]) => ld.appendChild(el("circle", { cx: x, cy: y, r: d / 2, fill: "none", stroke: "var(--milled)", "stroke-width": strokeW(0.1) })));
+    }
+    const lcut = L("#l-cut");
+    if (state.vis.cut) b.cutout.forEach(p => lcut.appendChild(el("path", { d: pathD(p), fill: "none", stroke: "var(--cut)", "stroke-width": strokeW(0.12), "stroke-dasharray": "1 0.5" })));
+    const la = L("#l-axes");
+    la.appendChild(el("path", { d: "M0 0L5 0", stroke: "#ff3b30", "stroke-width": strokeW(0.15) }));
+    la.appendChild(el("path", { d: "M0 0L0 5", stroke: "#34c759", "stroke-width": strokeW(0.15) }));
+  }
+  function applyVB() { svg.setAttribute("viewBox", `${vb.x} ${vb.y} ${vb.w} ${vb.h}`); }
+  function fitView() {
+    const b = state.board; if (!b) return;
+    const [x0, y0, x1, y1] = b.bounds;
+    const W = svg.clientWidth, H = svg.clientHeight;
+    const bw = (x1 - x0) || 1, bh = (y1 - y0) || 1;
+    const s = Math.min(W / bw, H / bh) / 1.1;    // px por mm
+    vb.w = W / s; vb.h = H / s;
+    vb.x = (x0 + x1) / 2 - vb.w / 2;
+    vb.y = -((y0 + y1) / 2) - vb.h / 2;           // eixo Y invertido pelo scale(1,-1)
+    applyVB(); render();
+  }
+  function toWorld(ev) {
+    const r = svg.getBoundingClientRect();
+    const x = vb.x + (ev.clientX - r.left) / r.width * vb.w;
+    const y = vb.y + (ev.clientY - r.top) / r.height * vb.h;
+    return { x, y: -y };
+  }
+  svg.addEventListener("wheel", (ev) => {
+    if (!state.board) return;
+    ev.preventDefault();
+    const f = Math.exp(ev.deltaY * 0.002);
+    const r = svg.getBoundingClientRect();
+    const px = (ev.clientX - r.left) / r.width, py = (ev.clientY - r.top) / r.height;
+    const nw = vb.w * f, nh = vb.h * f;
+    vb.x += (vb.w - nw) * px; vb.y += (vb.h - nh) * py; vb.w = nw; vb.h = nh;
+    applyVB(); render();
+  }, { passive: false });
+  let drag = null;
+  svg.addEventListener("pointerdown", (ev) => { drag = { x: ev.clientX, y: ev.clientY, vx: vb.x, vy: vb.y }; svg.setPointerCapture(ev.pointerId); svg.classList.add("dragging"); });
+  svg.addEventListener("pointermove", (ev) => {
+    if (drag) {
+      const r = svg.getBoundingClientRect();
+      vb.x = drag.vx - (ev.clientX - drag.x) / r.width * vb.w;
+      vb.y = drag.vy - (ev.clientY - drag.y) / r.height * vb.h;
+      applyVB();
+    }
+    if (state.board) { const p = toWorld(ev); $("#coords").textContent = `X ${p.x.toFixed(2)}  Y ${p.y.toFixed(2)} mm`; }
+  });
+  svg.addEventListener("pointerup", () => { drag = null; svg.classList.remove("dragging"); });
+  window.addEventListener("resize", () => state.board && fitView());
+
+  // ---------------------------------------------------------------- eventos
+  $("#btn-open").onclick = () => $("#file").click();
+  $("#file").onchange = (e) => loadFile(e.target.files[0]);
+  $("#btn-fit").onclick = fitView;
+  $("#btn-reveal").onclick = () => fetch("/api/reveal?token=" + state.token);
+  $("#btn-choose").onclick = async () => {
+    const b = $("#btn-choose"); b.disabled = true;
+    try {
+      const d = await (await fetch("/api/choose-dir")).json();
+      if (d.error) log("ERRO: " + d.error, "err");
+      else if (d.path) { $("#out-dir").value = d.path; try { localStorage.setItem("gcodegen.out_dir", d.path); } catch (_) {} }
+    } finally { b.disabled = false; }
+  };
+  try { $("#out-dir").value = localStorage.getItem("gcodegen.out_dir") || ""; } catch (_) {}
+  document.querySelectorAll("[data-layer]").forEach(cb => cb.onchange = () => { state.vis[cb.dataset.layer] = cb.checked; render(); });
+  document.addEventListener("click", () => document.querySelectorAll(".help.open").forEach(o => o.classList.remove("open")));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") document.querySelectorAll(".help.open").forEach(o => o.classList.remove("open"));
+    if ((e.metaKey || e.ctrlKey) && e.key === "o") { e.preventDefault(); $("#file").click(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === "g") { e.preventDefault(); if (state.token) document.querySelector(".group.active .gen").click(); }
+  });
+  ["dragenter", "dragover"].forEach(t => document.addEventListener(t, (e) => { e.preventDefault(); document.body.classList.add("dragover"); }));
+  ["dragleave", "drop"].forEach(t => document.addEventListener(t, (e) => { e.preventDefault(); document.body.classList.remove("dragover"); }));
+  document.addEventListener("drop", (e) => loadFile(e.dataTransfer.files[0]));
+
+  buildParams().then(async () => {
+    const d = await (await fetch("/api/initial")).json();
+    if (d.token) {
+      busy(true); await opened(d, d.name + ".zip"); busy(false);
+      if (new URLSearchParams(location.search).has("gerar")) { $("#f-iso_passes").value = "2"; await generate(["isolation", "drill", "cutout"]); }
+    }
+    else log("Abra um ZIP exportado pelo KiCad (Gerber + Excellon).");
+  });
+})();
+</script>
+</body>
+</html>

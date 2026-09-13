@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gcodegen"
+version = "0.1.0"
+description = "Gera G-code GRBL (isolação, furação e recorte) a partir do ZIP de Gerber + Excellon do KiCad"
+requires-python = ">=3.9"
+dependencies = ["shapely>=2.0"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+gcodegen = "gcodegen.cli:main"
+gcodegen-web = "gcodegen.web:main"
+
+[tool.setuptools]
+packages = ["gcodegen"]
+
+[tool.setuptools.package-data]
+gcodegen = ["static/*.html"]
