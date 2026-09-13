@@ -13,6 +13,8 @@ import operator
 import re
 from dataclasses import dataclass, field
 
+import shapely
+from shapely.errors import GEOSException
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import linemerge, polygonize, unary_union
@@ -24,6 +26,36 @@ MIN_ARC_SEGMENTS = 8
 
 class GerberError(Exception):
     pass
+
+
+SNAP_GRID = 1e-6  # mm; usado só no fallback de união robusta
+
+
+def robust_union(geoms: list) -> BaseGeometry:
+    """unary_union que não desiste diante de geometria degenerada.
+
+    Gerbers reais têm arcos e traços que se tocam em pontos quase coincidentes;
+    o GEOS pode falhar com "non-noded intersection". No fallback, cada peça é
+    validada e todos os vértices são arredondados para uma grade fina
+    (snap-rounding), o que torna a união exata e sempre bem-sucedida.
+    """
+    geoms = [g for g in geoms if g is not None and not g.is_empty]
+    if not geoms:
+        return Polygon()
+    try:
+        return unary_union(geoms)
+    except GEOSException:
+        fixed = [shapely.set_precision(shapely.make_valid(g), SNAP_GRID) for g in geoms]
+        return shapely.set_precision(unary_union(fixed), 0.0)
+
+
+def robust_difference(a: BaseGeometry, b: BaseGeometry) -> BaseGeometry:
+    try:
+        return a.difference(b)
+    except GEOSException:
+        a2 = shapely.set_precision(shapely.make_valid(a), SNAP_GRID)
+        b2 = shapely.set_precision(shapely.make_valid(b), SNAP_GRID)
+        return shapely.set_precision(a2.difference(b2), 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +175,9 @@ class MacroTemplate:
             if geom is None or geom.is_empty:
                 continue
             if exposure:
-                result = unary_union([result, geom]) if not result.is_empty else geom
+                result = robust_union([result, geom]) if not result.is_empty else geom
             else:
-                result = result.difference(geom)
+                result = robust_difference(result, geom)
         return result
 
     @staticmethod
@@ -212,7 +244,10 @@ class GerberLayer:
         """Reconstrói o polígono fechado a partir das centerlines (Edge.Cuts)."""
         if not self.paths:
             return None
-        merged = linemerge(unary_union(self.paths))
+        try:
+            merged = linemerge(unary_union(self.paths))
+        except GEOSException:
+            merged = linemerge(robust_union(self.paths))
         polys = list(polygonize(merged))
         if not polys:
             return None
@@ -459,7 +494,7 @@ class GerberParser:
                     unary_union([affinity.translate(rect, *a), affinity.translate(rect, *b)]).convex_hull
                     for a, b in zip(pts, pts[1:])
                 ]
-                self._add(unary_union(pieces))
+                self._add(robust_union(pieces))
         self.x, self.y = nx, ny
 
     def _arc_points(self, start, end, i, j, clockwise):
@@ -518,6 +553,8 @@ class GerberParser:
     def _add(self, geom: BaseGeometry):
         if geom.is_empty:
             return
+        if not geom.is_valid:
+            geom = shapely.make_valid(geom)
         if self.polarity_dark:
             self.dark.append(geom)
         else:
@@ -525,7 +562,7 @@ class GerberParser:
 
     def _finish(self) -> GerberLayer:
         if not self.clear_ops:
-            geom = unary_union(self.dark) if self.dark else Polygon()
+            geom = robust_union(self.dark)
         else:
             # aplica LPC na ordem: tudo desenhado antes do clear é subtraído,
             # o que vem depois é adicionado por cima.
@@ -533,11 +570,11 @@ class GerberParser:
             idx = 0
             for at, clear in self.clear_ops:
                 if at > idx:
-                    geom = unary_union([geom] + self.dark[idx:at])
+                    geom = robust_union([geom] + self.dark[idx:at])
                     idx = at
-                geom = geom.difference(clear)
+                geom = robust_difference(geom, clear)
             if idx < len(self.dark):
-                geom = unary_union([geom] + self.dark[idx:])
+                geom = robust_union([geom] + self.dark[idx:])
         return GerberLayer(geometry=geom, paths=self.paths, units="mm")
 
 

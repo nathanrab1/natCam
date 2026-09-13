@@ -235,7 +235,7 @@
     allUrl: () => `/api/files/${state.token}/all.zip`,
   };
   const PY_MODULES = ["__init__", "config", "excellon", "gerber", "gcode", "toolpaths", "zipreader", "preview", "pipeline", "api", "browser"];
-  const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/";
+  const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v0.29.4/full/";
   const browserBackend = {
     name: "browser", local: false, py: null, urls: {},
     async init() {
@@ -253,6 +253,7 @@
       log("Python pronto.", "ok");
     },
     call(fn, ...args) {
+      if (typeof this.mod[fn] !== "function") throw new Error("o Python no navegador parou de responder — recarregue a página (⌘R) e tente de novo");
       try { return JSON.parse(this.mod[fn](...args)); }
       catch (e) { const m = String(e.message || e).split("\n").filter(l => l.trim()).pop(); throw new Error(m.replace(/^\w+Error: /, "")); }
     },

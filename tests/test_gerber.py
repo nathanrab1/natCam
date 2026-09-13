@@ -109,3 +109,25 @@ def test_outline_polygon_with_hole():
 def test_unknown_aperture_raises():
     with pytest.raises(GerberError):
         parse_gerber(HEADER + "D99*\nX0Y0D03*\nM02*")
+
+
+def test_robust_union_handles_invalid_pieces():
+    from shapely.geometry import Polygon
+    from gcodegen.gerber import robust_union, robust_difference
+    bow = Polygon([(0, 0), (1, 1), (1, 0), (0, 1)])       # auto-intersecta
+    sq = Polygon([(0.5, 0.5), (2, 0.5), (2, 2), (0.5, 2)])
+    u = robust_union([bow, sq])
+    assert u.is_valid and u.area == pytest.approx(0.5 + 2.25 - 0.125, abs=1e-3)
+    d = robust_difference(bow, Point(0.5, 0.5).buffer(0.1))
+    assert d.is_valid and d.area < 0.5
+
+
+def test_degenerate_gerber_does_not_raise():
+    # traço de comprimento zero + arco de raio zero + região com pontos repetidos
+    text = HEADER + ("%ADD10C,0.200000*%\nD10*\n"
+                     "X1000000Y1000000D02*\nX1000000Y1000000D01*\n"
+                     "G75*\nG03*\nX1000000Y1000000I0J0D01*\nG01*\n"
+                     "G36*\nX0Y0D02*\nX2000000Y0D01*\nX2000000Y0D01*\nX2000000Y2000000D01*\n"
+                     "X0Y2000000D01*\nX0Y0D01*\nG37*\nM02*")
+    g = parse_gerber(text)
+    assert g.geometry.is_valid and g.geometry.area > 3.9

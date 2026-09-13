@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+import shapely
 from shapely import affinity
+from shapely.errors import GEOSException
 from shapely.geometry import LineString, LinearRing, MultiPolygon, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import substring, unary_union
@@ -181,6 +183,8 @@ def isolation_paths(board: Board, cfg: Config) -> list[Path2D]:
     if board.copper.is_empty:
         return []
     copper = board.copper
+    if not copper.is_valid:
+        copper = shapely.make_valid(copper)
     # descarta trechos fora da placa (o recorte remove esse material); deixa
     # a fresa ir um pouco além da borda para isolar cobre que encosta nela
     clip = None
@@ -190,11 +194,17 @@ def isolation_paths(board: Board, cfg: Config) -> list[Path2D]:
     step = cfg.tool_dia * (1.0 - cfg.iso_overlap)
     for k in range(max(1, cfg.iso_passes)):
         off = cfg.tool_dia / 2.0 + k * step
-        g = copper.buffer(off, quad_segs=16, join_style="round")
+        try:
+            g = copper.buffer(off, quad_segs=16, join_style="round")
+        except GEOSException:
+            g = shapely.set_precision(copper, 1e-6).buffer(off, quad_segs=16, join_style="round")
         for ring in _rings(g):
             line = LineString(ring.coords)
             if clip is not None:
-                line = line.intersection(clip)
+                try:
+                    line = line.intersection(clip)
+                except GEOSException:
+                    line = shapely.set_precision(line, 1e-6).intersection(shapely.set_precision(clip, 1e-6))
             for seg in _lines(line):
                 pts = _simplify(list(seg.coords))
                 if len(pts) >= 2:
