@@ -14,7 +14,17 @@ KiCad exporta:
 Só usa `G0`/`G1`/`M3`/`M5`/`G4` — sem ciclos fixos nem troca automática de
 ferramenta, que o GRBL não tem.
 
-## Interface web (recomendado)
+## Usar online (GitHub Pages)
+
+A página funciona sem servidor: o Python roda dentro do navegador (Pyodide).
+Publicada em **https://nathanrab1.github.io/natCam/** — abra, arraste o ZIP e
+gere; os arquivos saem como download e o ZIP nunca sai do seu computador.
+O primeiro acesso baixa ~15 MB de runtime (depois fica em cache).
+
+Para publicar/atualizar: no GitHub, *Settings → Pages → Source: Deploy from a
+branch*, branch `main`, pasta `/ (root)`. Cada push em `main` atualiza o site.
+
+## Usar localmente (servidor Python)
 
 Dê dois cliques em **`Abrir Gerador de GCode.command`** dentro desta pasta.
 Uma janela do Terminal abre (deixe-a aberta — é o servidor) e o Google Chrome
@@ -39,6 +49,10 @@ lembrada. **Mostrar no Finder** abre a pasta.
 Pelo Terminal, o equivalente é `.venv/bin/gcodegen-web` (ou
 `.venv/bin/gcodegen-web placa.zip` para já abrir uma placa). Para encerrar,
 Ctrl+C na janela do Terminal.
+
+A mesma `index.html` serve os dois modos: se encontra o servidor local usa
+ele (com pasta de destino e "Mostrar no Finder"); se não, carrega o Python
+no navegador.
 
 ## Instalação (linha de comando)
 

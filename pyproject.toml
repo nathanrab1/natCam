@@ -18,6 +18,3 @@ gcodegen-web = "gcodegen.web:main"
 
 [tool.setuptools]
 packages = ["gcodegen"]
-
-[tool.setuptools.package-data]
-gcodegen = ["static/*.html"]

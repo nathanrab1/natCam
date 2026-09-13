@@ -82,6 +82,7 @@
   #log .err { color: var(--err); }
   #log .ok { color: var(--ok); }
   #busy { display: none; color: var(--accent); }
+  body.browser-mode .local-only { display: none !important; }
   #busy.on { display: inline; }
   @media (max-width: 800px) {
     body { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr auto; grid-template-areas: "top" "side" "main" "log"; }
@@ -97,19 +98,20 @@
   <span id="file-name">nenhum arquivo aberto</span>
   <span id="busy">processando…</span>
   <span class="spacer"></span>
-  <button id="btn-reveal" disabled>Mostrar no Finder</button>
+  <button id="btn-reveal" class="local-only" disabled>Mostrar no Finder</button>
 </header>
 
 <aside>
   <div class="tabs" id="tabs"></div>
   <div id="groups"></div>
   <div class="out">
-    <h3>Pasta de destino</h3>
-    <div class="dest">
+    <h3 class="local-only">Pasta de destino</h3>
+    <div class="dest local-only">
       <input id="out-dir" type="text" placeholder="padrão: output/<nome> na pasta do projeto" spellcheck="false">
       <button id="btn-choose" title="Abrir o seletor de pastas do macOS">Escolher…</button>
     </div>
-    <h3 style="margin-top:12px">Arquivos gerados</h3>
+    <h3 class="local-only" style="margin-top:12px"></h3>
+    <h3>Arquivos gerados</h3>
     <ul id="files"><li style="color:var(--muted)">nenhum ainda</li></ul>
     <p id="all-link" style="margin:8px 0 0;display:none"><a href="#" id="btn-all">⬇ Baixar tudo (.zip)</a></p>
   </div>
@@ -153,7 +155,7 @@
 
   // ---------------------------------------------------------------- parâmetros
   async function buildParams() {
-    const p = await (await fetch("/api/params")).json();
+    const p = await backend.params();
     $("#ver").textContent = "v" + p.version;
     const tabs = $("#tabs"), groups = $("#groups");
     p.groups.forEach((g, i) => {
@@ -212,19 +214,81 @@
     return cfg;
   }
 
-  // ---------------------------------------------------------------- API
+  // ---------------------------------------------------------------- backends
+  // "server": servidor Python local (gcodegen-web). "browser": Python rodando
+  // no próprio navegador via Pyodide (GitHub Pages, sem servidor).
   async function post(url, body, headers) {
     const r = await fetch(url, { method: "POST", body, headers });
     const data = await r.json().catch(() => ({ error: "resposta inválida do servidor" }));
     if (!r.ok || data.error) throw new Error(data.error || r.statusText);
     return data;
   }
+  const JSONH = { "Content-Type": "application/json" };
+  const serverBackend = {
+    name: "server", local: true,
+    params: async () => (await fetch("/api/params")).json(),
+    initial: async () => (await fetch("/api/initial")).json(),
+    load: (file) => post("/api/load", file, { "X-Filename": file.name }),
+    preview: (cfg) => post("/api/preview", JSON.stringify({ token: state.token, config: cfg }), JSONH),
+    generate: (cfg, ops, out_dir) => post("/api/generate", JSON.stringify({ token: state.token, config: cfg, ops, out_dir }), JSONH),
+    fileUrl: (f) => `/api/files/${state.token}/${encodeURIComponent(f.name)}`,
+    allUrl: () => `/api/files/${state.token}/all.zip`,
+  };
+  const PY_MODULES = ["__init__", "config", "excellon", "gerber", "gcode", "toolpaths", "zipreader", "preview", "pipeline", "api", "browser"];
+  const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/";
+  const browserBackend = {
+    name: "browser", local: false, py: null, urls: {},
+    async init() {
+      log("Carregando Python no navegador (primeira vez baixa ~15 MB)…");
+      await new Promise((ok, err) => { const sc = document.createElement("script"); sc.src = PYODIDE_URL + "pyodide.js"; sc.onload = ok; sc.onerror = () => err(new Error("não consegui baixar o Pyodide")); document.head.appendChild(sc); });
+      this.py = await loadPyodide({ indexURL: PYODIDE_URL });
+      await this.py.loadPackage("shapely");
+      this.py.FS.mkdirTree("/home/pyodide/gcodegen");
+      await Promise.all(PY_MODULES.map(async (m) => {
+        const r = await fetch(`gcodegen/${m}.py`, { cache: "no-cache" });
+        if (!r.ok) throw new Error(`não achei gcodegen/${m}.py`);
+        this.py.FS.writeFile(`/home/pyodide/gcodegen/${m}.py`, await r.text());
+      }));
+      this.mod = this.py.pyimport("gcodegen.browser");
+      log("Python pronto.", "ok");
+    },
+    call(fn, ...args) {
+      try { return JSON.parse(this.mod[fn](...args)); }
+      catch (e) { const m = String(e.message || e).split("\n").filter(l => l.trim()).pop(); throw new Error(m.replace(/^\w+Error: /, "")); }
+    },
+    params() { return this.call("params"); },
+    initial: async () => ({}),
+    async load(file) { const buf = new Uint8Array(await file.arrayBuffer()); return { token: "browser", ...this.call("load", buf, file.name) }; },
+    async preview(cfg) { return this.call("preview", JSON.stringify(cfg)); },
+    async generate(cfg, ops) {
+      const d = this.call("generate", JSON.stringify(cfg), JSON.stringify(ops));
+      Object.values(this.urls).forEach(URL.revokeObjectURL); this.urls = {};
+      d.files.forEach(f => { this.urls[f.name] = URL.createObjectURL(new Blob([f.text], { type: f.name.endsWith(".svg") ? "image/svg+xml" : "text/plain" })); });
+      const zip = this.mod.all_zip().toJs();
+      this.urls["all.zip"] = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
+      return d;
+    },
+    fileUrl(f) { return this.urls[f.name]; },
+    allUrl() { return this.urls["all.zip"]; },
+  };
+  let backend = serverBackend;
+  async function pickBackend() {
+    try {
+      const r = await fetch("/api/params", { cache: "no-cache" });
+      if (r.ok && (r.headers.get("content-type") || "").includes("json")) return serverBackend;
+    } catch (_) {}
+    backend = browserBackend;
+    document.body.classList.add("browser-mode");
+    await browserBackend.init();
+    return browserBackend;
+  }
+
   async function loadFile(file) {
     if (!file) return;
     busy(true);
     try {
       log("Abrindo " + file.name);
-      const d = await post("/api/load", file, { "X-Filename": file.name });
+      const d = await backend.load(file);
       await opened(d, file.name);
     } catch (e) { log("ERRO: " + e.message, "err"); }
     finally { busy(false); }
@@ -244,8 +308,7 @@
   }
   async function preview(fit) {
     try {
-      const d = await post("/api/preview", JSON.stringify({ token: state.token, config: readConfig() }),
-                           { "Content-Type": "application/json" });
+      const d = await backend.preview(readConfig());
       state.board = d.board; render(); if (fit) fitView();
     } catch (e) { log("ERRO: " + e.message, "err"); }
   }
@@ -255,21 +318,20 @@
       log("Gerando " + (ops.length === 3 ? "tudo" : { isolation: "isolação", drill: "furação", cutout: "recorte" }[ops[0]]) + "…");
       const out_dir = $("#out-dir").value.trim();
       try { localStorage.setItem("gcodegen.out_dir", out_dir); } catch (_) {}
-      const d = await post("/api/generate", JSON.stringify({ token: state.token, config: readConfig(), out_dir, ops }),
-                           { "Content-Type": "application/json" });
+      const d = await backend.generate(readConfig(), ops, out_dir);
       d.log.forEach(l => log("  " + l));
       log("Pronto.", "ok");
       state.board = d.board; render();
       const ul = $("#files"); ul.innerHTML = "";
       d.files.forEach(f => {
         const li = document.createElement("li");
-        const a = document.createElement("a"); a.href = `/api/files/${state.token}/${encodeURIComponent(f.name)}`;
+        const a = document.createElement("a"); a.href = backend.fileUrl(f);
         a.textContent = f.name; if (!f.name.endsWith(".svg")) a.download = f.name; else a.target = "_blank";
         const s = document.createElement("span"); s.className = "size"; s.textContent = (f.size / 1024).toFixed(1) + " kB";
         li.append(a, s); ul.appendChild(li);
       });
-      $("#btn-all").href = `/api/files/${state.token}/all.zip`;
-      $("#all-link").style.display = "block"; $("#btn-reveal").disabled = false;
+      $("#btn-all").href = backend.allUrl();
+      $("#all-link").style.display = "block"; $("#btn-reveal").disabled = !backend.local;
     } catch (e) { log("ERRO: " + e.message, "err"); }
     finally { busy(false); }
   }
@@ -372,14 +434,14 @@
   ["dragleave", "drop"].forEach(t => document.addEventListener(t, (e) => { e.preventDefault(); document.body.classList.remove("dragover"); }));
   document.addEventListener("drop", (e) => loadFile(e.dataTransfer.files[0]));
 
-  buildParams().then(async () => {
-    const d = await (await fetch("/api/initial")).json();
+  pickBackend().then(buildParams).then(async () => {
+    const d = await backend.initial();
     if (d.token) {
       busy(true); await opened(d, d.name + ".zip"); busy(false);
       if (new URLSearchParams(location.search).has("gerar")) { $("#f-iso_passes").value = "2"; await generate(["isolation", "drill", "cutout"]); }
     }
     else log("Abra um ZIP exportado pelo KiCad (Gerber + Excellon).");
-  });
+  }).catch(e => log("ERRO: " + e.message, "err"));
 })();
 </script>
 </body>
